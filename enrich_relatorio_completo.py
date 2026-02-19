@@ -4,6 +4,7 @@ import time
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
 
+import requests
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -21,16 +22,17 @@ DATA_START_ROW = 4
 
 SKIP_SHEETS = {"Dashboard"}
 
-# só o que a gente precisa p/ essa rotina
 NEEDED_COLS = [
     "detail_url",
     "pdf_relatorio_completo_url",
+    "pdf_relatorio_completo_local",
     "pdf_relatorio_completo_checado_em",
 ]
 
-# priorização
 FALLBACK_DAYS_AFTER_REGISTRO = 7
 RECHECK_DAYS = 3
+
+PDF_LABEL = "Visualizar arquivo relatório completo com o resultado da pesquisa"
 
 
 def make_driver(profile_dir: str = "./chrome-profile-pesqele", headless: bool = False) -> webdriver.Chrome:
@@ -40,7 +42,7 @@ def make_driver(profile_dir: str = "./chrome-profile-pesqele", headless: bool = 
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
 
-    if headless or os.getenv("CI"):
+    if headless or os.getenv("CI") or os.getenv("HEADLESS") == "1":
         opts.add_argument("--headless=new")
 
     if not os.getenv("CI"):
@@ -118,131 +120,6 @@ def col_idx(header: List[str], name: str) -> Optional[int]:
         return None
 
 
-def should_check_row(row: Dict[str, str]) -> bool:
-    today = date.today()
-
-    detail_url = (row.get("detail_url") or "").strip()
-    if not detail_url:
-        return False
-
-    # se já tem link do relatório completo, não precisa checar
-    if (row.get("pdf_relatorio_completo_url") or "").strip():
-        return False
-
-    checked_at = iso_dt_to_date(row.get("pdf_relatorio_completo_checado_em") or "")
-    if checked_at and (today - checked_at).days < RECHECK_DAYS:
-        return False
-
-    data_div = iso_to_date(row.get("data_divulgacao") or "")
-    if data_div:
-        return data_div <= today
-
-    reg = iso_to_date(row.get("data_registro") or "")
-    if reg:
-        return (today - reg).days >= FALLBACK_DAYS_AFTER_REGISTRO
-
-    return True
-
-
-def click_and_capture_new_url(driver: webdriver.Chrome, wait: WebDriverWait, el) -> Optional[str]:
-    handles_before = driver.window_handles[:]
-    current_before = driver.current_url
-
-    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-    try:
-        driver.execute_script("arguments[0].click();", el)
-    except Exception:
-        try:
-            el.click()
-        except Exception:
-            return None
-
-    time.sleep(0.6)
-
-    handles_after = driver.window_handles[:]
-    if len(handles_after) > len(handles_before):
-        new_handle = [h for h in handles_after if h not in handles_before][0]
-        driver.switch_to.window(new_handle)
-        wait_dom_ready(driver, timeout=20)
-        url = driver.current_url
-        driver.close()
-        driver.switch_to.window(handles_before[0])
-        wait_dom_ready(driver, timeout=20)
-        return url
-
-    try:
-        wait.until(lambda d: d.current_url != current_before)
-        url = driver.current_url
-        driver.back()
-        wait_dom_ready(driver, timeout=20)
-        return url
-    except Exception:
-        return None
-
-
-def is_disabled(el) -> bool:
-    disabled_attr = (el.get_attribute("disabled") or "").strip().lower()
-    aria_disabled = (el.get_attribute("aria-disabled") or "").strip().lower()
-    if disabled_attr in {"true", "disabled"}:
-        return True
-    if aria_disabled == "true":
-        return True
-    return False
-
-
-def extract_relatorio_completo_url(driver: webdriver.Chrome, wait: WebDriverWait, detail_url: str) -> str:
-    driver.get(detail_url)
-    wait_dom_ready(driver)
-    try:
-        wait.until(EC.presence_of_element_located((By.ID, "print")))
-    except TimeoutException:
-        pass
-
-    label = "Visualizar arquivo relatório completo com o resultado da pesquisa"
-
-    # tenta achar pelo span (como no seu print do devtools)
-    xps = [
-        f"//span[contains(normalize-space(), '{label}')]/ancestor::button[1]",
-        f"//button[contains(normalize-space(), '{label}')]",
-    ]
-
-    btn = None
-    for xp in xps:
-        try:
-            btn = driver.find_element(By.XPATH, xp)
-            break
-        except Exception:
-            btn = None
-
-    if not btn:
-        return ""
-
-    if is_disabled(btn):
-        return ""
-
-    url = click_and_capture_new_url(driver, wait, btn)
-    if url:
-        return url
-
-    # fallback: às vezes abre popup bloqueado; tenta enter no botão focado
-    try:
-        btn.send_keys(Keys.ENTER)
-        time.sleep(0.6)
-        handles = driver.window_handles[:]
-        if len(handles) > 1:
-            driver.switch_to.window(handles[-1])
-            wait_dom_ready(driver, timeout=20)
-            url2 = driver.current_url
-            driver.close()
-            driver.switch_to.window(handles[0])
-            wait_dom_ready(driver, timeout=20)
-            return url2
-    except Exception:
-        pass
-
-    return ""
-
-
 def build_rows_from_sheet(ws: gspread.Worksheet) -> Tuple[List[str], List[Dict[str, str]]]:
     values = ws.get_all_values()
     if len(values) < HEADER_ROW:
@@ -270,18 +147,201 @@ def update_cells_batch(ws: gspread.Worksheet, header: List[str], updates: List[T
         if not idx:
             continue
         cell_updates.append(gspread.Cell(row_number, idx, value))
-
     if cell_updates:
         ws.update_cells(cell_updates, value_input_option="USER_ENTERED")
 
 
+def should_check_row(row: Dict[str, str]) -> bool:
+    today = date.today()
+
+    detail_url = (row.get("detail_url") or "").strip()
+    if not detail_url:
+        return False
+
+    if (row.get("pdf_relatorio_completo_url") or "").strip():
+        return False
+
+    checked_at = iso_dt_to_date(row.get("pdf_relatorio_completo_checado_em") or "")
+    if checked_at and (today - checked_at).days < RECHECK_DAYS:
+        return False
+
+    data_div = iso_to_date(row.get("data_divulgacao") or "")
+    if data_div:
+        return data_div <= today
+
+    reg = iso_to_date(row.get("data_registro") or "")
+    if reg:
+        return (today - reg).days >= FALLBACK_DAYS_AFTER_REGISTRO
+
+    return True
+
+
+def is_disabled(el) -> bool:
+    disabled_attr = (el.get_attribute("disabled") or "").strip().lower()
+    aria_disabled = (el.get_attribute("aria-disabled") or "").strip().lower()
+    if disabled_attr in {"true", "disabled"}:
+        return True
+    if aria_disabled == "true":
+        return True
+    return False
+
+
+def find_relatorio_button(driver: webdriver.Chrome) -> Optional[object]:
+    xps = [
+        f"//span[contains(normalize-space(), '{PDF_LABEL}')]/ancestor::button[1]",
+        f"//button[contains(normalize-space(), '{PDF_LABEL}')]",
+    ]
+    for xp in xps:
+        try:
+            return driver.find_element(By.XPATH, xp)
+        except Exception:
+            pass
+    return None
+
+
+def enable_network_capture(driver: webdriver.Chrome) -> None:
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Page.enable", {})
+        driver.execute_cdp_cmd("Runtime.enable", {})
+    except Exception:
+        pass
+
+
+def clear_browser_logs(driver: webdriver.Chrome) -> None:
+    try:
+        driver.get_log("performance")
+    except Exception:
+        pass
+
+
+def click_relatorio(driver: webdriver.Chrome, btn) -> None:
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+    try:
+        driver.execute_script("arguments[0].click();", btn)
+    except Exception:
+        btn.click()
+
+
+def extract_pdf_url_from_performance_logs(driver: webdriver.Chrome, timeout: int = 15) -> str:
+    deadline = time.time() + timeout
+    best_url = ""
+
+    while time.time() < deadline:
+        try:
+            logs = driver.get_log("performance")
+        except Exception:
+            logs = []
+
+        for entry in logs:
+            try:
+                msg = entry.get("message", "")
+                if not msg:
+                    continue
+                data = msg
+                if isinstance(data, str):
+                    import json
+                    data = json.loads(data)
+                message = data.get("message", {})
+                method = message.get("method", "")
+                params = message.get("params", {})
+            except Exception:
+                continue
+
+            if method == "Network.responseReceived":
+                response = params.get("response", {}) or {}
+                mime = (response.get("mimeType") or "").lower()
+                url = (response.get("url") or "").strip()
+                if "application/pdf" in mime and url:
+                    return url
+
+                ct = ""
+                headers = response.get("headers") or {}
+                if isinstance(headers, dict):
+                    ct = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
+                if "application/pdf" in ct and url:
+                    return url
+
+                # às vezes o mime não vem como pdf mas o URL sugere arquivo
+                if url and (url.lower().endswith(".pdf") or "pdf" in url.lower()):
+                    best_url = url
+
+        time.sleep(0.3)
+
+    return best_url
+
+
+def download_with_session_cookies(driver: webdriver.Chrome, url: str, out_path: str) -> bool:
+    if not url:
+        return False
+
+    sess = requests.Session()
+
+    for c in driver.get_cookies():
+        try:
+            sess.cookies.set(c["name"], c["value"], domain=c.get("domain"), path=c.get("path", "/"))
+        except Exception:
+            sess.cookies.set(c["name"], c["value"])
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+        "Referer": driver.current_url,
+    }
+
+    try:
+        resp = sess.get(url, headers=headers, timeout=60, allow_redirects=True)
+        if resp.status_code != 200:
+            return False
+
+        ct = (resp.headers.get("Content-Type") or "").lower()
+        if "pdf" not in ct and not resp.content[:4] == b"%PDF":
+            return False
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(resp.content)
+        return True
+    except Exception:
+        return False
+
+
+def extract_and_download_relatorio(driver: webdriver.Chrome, wait: WebDriverWait, detail_url: str, numero: str) -> Tuple[str, str]:
+    driver.get(detail_url)
+    wait_dom_ready(driver)
+    try:
+        wait.until(EC.presence_of_element_located((By.ID, "print")))
+    except TimeoutException:
+        pass
+
+    btn = find_relatorio_button(driver)
+    if not btn:
+        return "", ""
+
+    if is_disabled(btn):
+        return "", ""
+
+    enable_network_capture(driver)
+    clear_browser_logs(driver)
+
+    click_relatorio(driver, btn)
+
+    pdf_url = extract_pdf_url_from_performance_logs(driver, timeout=18)
+
+    # baixa o arquivo (mesmo se a url for “meia-boca”, tentamos)
+    safe_num = re.sub(r"[^A-Za-z0-9\-_\.]", "_", (numero or "sem_numero"))
+    out_path = os.path.abspath(os.path.join("pdfs_relatorios", f"{safe_num}.pdf"))
+
+    ok = download_with_session_cookies(driver, pdf_url, out_path) if pdf_url else False
+    return pdf_url, (out_path if ok else "")
+
+
 def enrich_one_worksheet(ws: gspread.Worksheet, headless: bool = False, limit: Optional[int] = None) -> None:
-    header = ensure_header_has(ws, NEEDED_COLS)
+    _ = ensure_header_has(ws, NEEDED_COLS)
     header, rows = build_rows_from_sheet(ws)
 
     candidates = [r for r in rows if should_check_row(r)]
 
-    # prioriza por data_divulgacao (as mais antigas primeiro)
     def sort_key(r: Dict[str, str]) -> Tuple[int, str]:
         d = r.get("data_divulgacao") or ""
         return (0, d) if d else (1, "9999-99-99")
@@ -303,19 +363,20 @@ def enrich_one_worksheet(ws: gspread.Worksheet, headless: bool = False, limit: O
         for i, r in enumerate(candidates, 1):
             numero = (r.get("numero_identificacao") or "").strip()
             detail_url = (r.get("detail_url") or "").strip()
-
-            print(f"{ws.title}: checando relatorio completo {numero} ({i}/{len(candidates)})")
-
-            pdf_url = ""
-            try:
-                pdf_url = extract_relatorio_completo_url(driver, wait, detail_url)
-            except Exception:
-                pdf_url = ""
-
             row_number = int(r["__row_number"])
+
+            print(f"{ws.title}: relatorio completo {numero} ({i}/{len(candidates)})")
+
+            pdf_url, local_path = ("", "")
+            try:
+                pdf_url, local_path = extract_and_download_relatorio(driver, wait, detail_url, numero)
+            except Exception:
+                pdf_url, local_path = ("", "")
 
             if pdf_url:
                 updates.append((row_number, "pdf_relatorio_completo_url", pdf_url))
+            if local_path:
+                updates.append((row_number, "pdf_relatorio_completo_local", local_path))
 
             updates.append((row_number, "pdf_relatorio_completo_checado_em", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
@@ -339,7 +400,6 @@ def run_enrichment_all_sheets(headless: bool = False, per_sheet_limit: Optional[
     for ws in ss.worksheets():
         if ws.title in SKIP_SHEETS:
             continue
-
         try:
             enrich_one_worksheet(ws, headless=headless, limit=per_sheet_limit)
         except Exception as e:
@@ -348,10 +408,11 @@ def run_enrichment_all_sheets(headless: bool = False, per_sheet_limit: Optional[
 
 
 if __name__ == "__main__":
-    headless = bool(os.getenv("CI", False))
+    headless = bool(os.getenv("CI", False)) or os.getenv("HEADLESS") == "1"
+
     per_sheet_limit = os.getenv("PER_SHEET_LIMIT", "")
     per_sheet_limit = int(per_sheet_limit) if per_sheet_limit.strip().isdigit() else None
 
-    print(f"Enriquecendo só PDF do relatório completo (headless={headless}) SPREADSHEET_ID={os.getenv('SPREADSHEET_ID')}")
+    print(f"Enriquecendo relatório completo (URL + download). HEADLESS={headless}")
     run_enrichment_all_sheets(headless=headless, per_sheet_limit=per_sheet_limit)
     print("Enriquecimento concluído.")
