@@ -36,10 +36,11 @@ ID_PAGINATOR = "formPesquisa:tabelaPesquisas_paginator_bottom"
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1OEmfn_RyTgrkPenzXlc6qvySs8rbVV39qmuHoULwtjQ")
 CREDS_PATH = "credentials.json"
 
-# mantém duas primeiras linhas livres (banner)
+# deixa 2 linhas livres (banner)
 HEADER_ROW = 3
 DATA_START_ROW = 4
 
+# melhor lugar p/ cargos: perto de data_divulgacao (vem da página de detalhe) e antes de uf_filtro/capturado_em
 COLS_BASE = [
     "numero_identificacao",
     "eleicao",
@@ -47,6 +48,7 @@ COLS_BASE = [
     "data_registro",
     "abrangencia",
     "data_divulgacao",
+    "cargos",
     "uf_filtro",
     "capturado_em",
 ]
@@ -60,20 +62,17 @@ def make_driver(profile_dir: str = "./chrome-profile-pesqele", headless: bool = 
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
-    
-    # No CI, usar headless sempre
+
     if headless or os.getenv("CI"):
         opts.add_argument("--headless=new")
-    
-    # No CI, não usar profile persistente
+
     if not os.getenv("CI"):
         opts.add_argument(f"--user-data-dir={os.path.abspath(profile_dir)}")
-    
-    # No CI, usar chromium-chromedriver do sistema
+
     if os.getenv("CI"):
         opts.binary_location = "/usr/bin/chromium-browser"
         return webdriver.Chrome(options=opts)
-    
+
     return webdriver.Chrome(options=opts)
 
 
@@ -279,19 +278,19 @@ def extract_field_by_label(driver: webdriver.Chrome, label_text: str) -> Optiona
     return None
 
 
-def click_row_lupa_and_get_data_divulgacao(
+def click_row_lupa_and_get_detail_fields(
     driver: webdriver.Chrome,
     wait: WebDriverWait,
     row_el,
     current_page: Optional[int],
-) -> Optional[str]:
+) -> Dict[str, Optional[str]]:
     try:
         lupa = row_el.find_element(By.CSS_SELECTOR, "a[id$=':detalhar']")
     except NoSuchElementException:
         try:
             lupa = row_el.find_element(By.CSS_SELECTOR, "a[title='Visualizar dados da pesquisa']")
         except NoSuchElementException:
-            return None
+            return {"data_divulgacao": None, "cargos": None}
 
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", lupa)
     try:
@@ -300,10 +299,11 @@ def click_row_lupa_and_get_data_divulgacao(
         try:
             lupa.click()
         except Exception:
-            return None
+            return {"data_divulgacao": None, "cargos": None}
 
     wait_detail_page_ready(driver, wait)
     data_div = extract_field_by_label(driver, "Data de divulgação:")
+    cargos = extract_field_by_label(driver, "Cargo(s):")
 
     driver.back()
     wait_dom_ready(driver)
@@ -317,7 +317,7 @@ def click_row_lupa_and_get_data_divulgacao(
         except Exception:
             pass
 
-    return data_div
+    return {"data_divulgacao": data_div, "cargos": cargos}
 
 
 def parse_current_table_with_details(driver: webdriver.Chrome, wait: WebDriverWait, tbody_id: str) -> List[Dict[str, str]]:
@@ -333,9 +333,9 @@ def parse_current_table_with_details(driver: webdriver.Chrome, wait: WebDriverWa
             continue
 
         try:
-            data_divulgacao = click_row_lupa_and_get_data_divulgacao(driver, wait, r, current_page)
+            details = click_row_lupa_and_get_detail_fields(driver, wait, r, current_page)
         except Exception:
-            data_divulgacao = None
+            details = {"data_divulgacao": None, "cargos": None}
 
         out.append({
             "numero_identificacao": cols[0],
@@ -343,7 +343,8 @@ def parse_current_table_with_details(driver: webdriver.Chrome, wait: WebDriverWa
             "empresa_contratada": cols[2],
             "data_registro": cols[3],
             "abrangencia": cols[4],
-            "data_divulgacao": data_divulgacao,
+            "data_divulgacao": details.get("data_divulgacao"),
+            "cargos": details.get("cargos"),
         })
 
         try:
@@ -388,12 +389,11 @@ def gspread_client(creds_path: str) -> gspread.Client:
 
 
 def get_spreadsheet(gc: gspread.Client) -> gspread.Spreadsheet:
-    """Abre a planilha usando SPREADSHEET_ID"""
     spreadsheet_id = os.getenv("SPREADSHEET_ID", SPREADSHEET_ID)
     return gc.open_by_key(spreadsheet_id)
 
 
-def ensure_worksheet(ss: gspread.Spreadsheet, title: str, rows: int = 1000, cols: int = 30) -> gspread.Worksheet:
+def ensure_worksheet(ss: gspread.Spreadsheet, title: str, rows: int = 2000, cols: int = 30) -> gspread.Worksheet:
     title = sheet_safe(title)
     try:
         return ss.worksheet(title)
@@ -462,7 +462,6 @@ def insert_new_rows_top(ws: gspread.Worksheet, df: pd.DataFrame, key_col_name: s
             df[c] = ""
     df = df[COLS_BASE].fillna("")
 
-    # manda ISO pra o Sheets reconhecer como data quando usar USER_ENTERED
     df["data_registro"] = df["data_registro"].apply(parse_br_date_to_iso)
     df["data_divulgacao"] = df["data_divulgacao"].apply(parse_br_date_to_iso)
     df["capturado_em"] = df["capturado_em"].apply(parse_br_datetime_to_iso)
@@ -475,14 +474,11 @@ def insert_new_rows_top(ws: gspread.Worksheet, df: pd.DataFrame, key_col_name: s
     if df_new.empty:
         return 0
 
-    # deixa as mais recentes em cima (melhor esforço usando data_divulgacao; fallback fica estável)
     df_new["__sort"] = df_new["data_divulgacao"].apply(iso_date_sort_key)
     df_new = df_new.sort_values(by=["__sort", "numero_identificacao"], ascending=[False, False], kind="mergesort")
     df_new = df_new.drop(columns=["__sort"])
 
     values = df_new.astype(str).values.tolist()
-
-    # insert real: entra na linha 4 e empurra o que já existe pra baixo
     ws.insert_rows(values, row=DATA_START_ROW, value_input_option="USER_ENTERED")
     return len(df_new)
 
@@ -494,15 +490,13 @@ def run_one_scope(
     uf_text: str,
     max_retries: int = 3
 ) -> pd.DataFrame:
-    """Executa scraping para um escopo (eleição + UF) com retry em caso de erro"""
-    
     for attempt in range(max_retries):
         try:
             select_one_menu_by_text(driver, wait, ID_ELEICAO_LABEL, ID_ELEICAO_PANEL, eleicao_text)
-            time.sleep(0.5)  # pequena pausa após selecionar eleição
-            
+            time.sleep(0.5)
+
             select_one_menu_by_text(driver, wait, ID_UF_LABEL, ID_UF_PANEL, uf_text)
-            time.sleep(0.5)  # pequena pausa após selecionar UF
+            time.sleep(0.5)
 
             click_and_wait_table_refresh(driver, wait, ID_BTN_PESQUISAR, ID_TBODY)
             wait_list_page_ready(driver, wait)
@@ -518,28 +512,26 @@ def run_one_scope(
                     df[c] = ""
 
             return df[COLS_BASE]
-            
+
         except StaleElementReferenceException as e:
             if attempt < max_retries - 1:
-                print(f"  Tentativa {attempt + 1} falhou com stale element, tentando novamente...")
-                time.sleep(2)  # espera antes de tentar novamente
-                # Recarrega a página para garantir elementos frescos
-                driver.get(URL_LISTAR)
-                wait_dom_ready(driver)
-                time.sleep(1)
-                continue
-            else:
-                raise e
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"  Tentativa {attempt + 1} falhou: {str(e)[:100]}, tentando novamente...")
+                print(f"Tentativa {attempt + 1} falhou com stale element, tentando novamente...")
                 time.sleep(2)
                 driver.get(URL_LISTAR)
                 wait_dom_ready(driver)
                 time.sleep(1)
                 continue
-            else:
-                raise e
+            raise e
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou: {str(e)[:120]}, tentando novamente...")
+                time.sleep(2)
+                driver.get(URL_LISTAR)
+                wait_dom_ready(driver)
+                time.sleep(1)
+                continue
+            raise e
 
 
 def run_to_google_sheets_insert_dedup(
@@ -557,7 +549,7 @@ def run_to_google_sheets_insert_dedup(
         wait_dom_ready(driver)
 
         if "BRASIL" not in SKIP_SHEETS:
-            print(f"Processando BRASIL...")
+            print("Processando BRASIL...")
             df_brasil = run_one_scope(driver, wait, eleicao_text=eleicao_text, uf_text="BRASIL")
             ws_brasil = ensure_worksheet(ss, "BRASIL", rows=2000, cols=max(30, len(COLS_BASE) + 5))
             novos = insert_new_rows_top(ws_brasil, df_brasil)
@@ -575,7 +567,7 @@ def run_to_google_sheets_insert_dedup(
                 ws = ensure_worksheet(ss, uf, rows=2000, cols=max(30, len(COLS_BASE) + 5))
                 novos = insert_new_rows_top(ws, df_uf)
                 print(f"{uf}: {novos} registros novos inseridos")
-                time.sleep(1)  # pequena pausa entre estados
+                time.sleep(1)
             except Exception as e:
                 print(f"Erro ao processar {uf}: {str(e)[:200]}")
                 continue
@@ -585,15 +577,12 @@ def run_to_google_sheets_insert_dedup(
 
 
 if __name__ == "__main__":
-    # Pega texto da eleição do env ou usa padrão
     eleicao = os.getenv("ELEICAO_TEXT", "Eleições Gerais 2026")
-    
-    # No CI sempre headless
     headless = bool(os.getenv("CI", False))
-    
+
     print(f"Iniciando scraper para: {eleicao}")
     print(f"Modo headless: {headless}")
     print(f"SPREADSHEET_ID: {os.getenv('SPREADSHEET_ID', SPREADSHEET_ID)}")
-    
+
     run_to_google_sheets_insert_dedup(eleicao_text=eleicao, headless=headless)
-    print("Atualização concluída (INSERT na linha 4; ISO + USER_ENTERED; sem mexer no Dashboard).")
+    print("Atualização concluída (INSERT na linha 4; ISO + USER_ENTERED; Dashboard intocado).")
