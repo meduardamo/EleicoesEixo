@@ -14,6 +14,8 @@ jobs:
     env:
       HEADLESS: "1"
       TZ: "America/Recife"
+      ELEICAO_TEXT: "Eleições Gerais 2026"
+      RECHECK_DAYS: "3"
       # opcional: limita quantos casos por aba por execução
       # PER_SHEET_LIMIT: "50"
 
@@ -49,5 +51,6 @@ jobs:
       - name: Run enrich (relatorio completo)
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: |
           python enrich_relatorio_completo.py
