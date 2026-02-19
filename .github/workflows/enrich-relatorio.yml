@@ -1,0 +1,53 @@
+name: pesqele-enrich-relatorio
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 08:30 Recife (UTC-3) = 11:30 UTC
+    - cron: "30 11 * * *"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      HEADLESS: "1"
+      TZ: "America/Recife"
+      # opcional: limita quantos casos por aba por execução
+      # PER_SHEET_LIMIT: "50"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write Google credentials
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          python - << 'PY'
+          import os, json
+          raw = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+          if not raw.strip():
+            raise SystemExit("Secret GOOGLE_CREDENTIALS_JSON está vazio.")
+          data = json.loads(raw)
+          with open("credentials.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+          print("credentials.json escrito.")
+          PY
+
+      - name: Run enrich (relatorio completo)
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: |
+          python enrich_relatorio_completo.py
