@@ -14,9 +14,7 @@ jobs:
     env:
       HEADLESS: "1"
       ELEICAO_TEXT: "Eleições Gerais 2026"
-      # você disse que precisa somar +3 nas datas/horas que grava
       ADD_HOURS: "3"
-      # se quiser tentar "horário local" do runner também:
       TZ: "America/Recife"
 
     steps:
