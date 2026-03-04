@@ -422,48 +422,92 @@ def _aba_vazia(values):
     return False
 
 
-def dedup_e_salvar_por_chave(aba, df_novo, key_col: str):
-    values = aba.get_all_values()
+def dedup_e_salvar_por_chave(aba, df_novo: pd.DataFrame, key_col: str):
+    """
+    Insere apenas linhas cujo key_col ainda não existe na aba.
 
-    if _aba_vazia(values):
-        aba.clear()
-        aba.update([df_novo.columns.tolist()] + df_novo.fillna("").values.tolist())
-        return len(df_novo), 0
-
-    header = values[0]
-    if not header:
-        aba.clear()
-        aba.update([df_novo.columns.tolist()] + df_novo.fillna("").values.tolist())
-        return len(df_novo), 0
+    Estratégia:
+    1. Lê todos os dados existentes.
+    2. Deduplica o df_novo internamente (garante que a coleta atual não tem
+       duplicatas antes de comparar com o que já está na planilha).
+    3. Filtra apenas as linhas com chave nova.
+    4. Se a aba estiver vazia, grava tudo (header + dados).
+    5. Caso contrário, faz append apenas das linhas novas — nunca reescreve
+       o que já existe, eliminando o risco de duplicação em caso de header
+       divergente entre execuções.
+    """
 
     if key_col not in df_novo.columns:
-        raise RuntimeError(f"df_novo não tem coluna de chave: {key_col}")
+        raise RuntimeError(f"df_novo não tem coluna de chave: '{key_col}'")
 
-    if key_col not in header:
-        df_exist = pd.DataFrame(values[1:], columns=header)
-        df_full = pd.concat([df_exist, df_novo], ignore_index=True)
+    # ── 1. Dedup interno da coleta atual ────────────────────────────────────
+    antes = len(df_novo)
+    df_novo = df_novo.drop_duplicates(subset=[key_col], keep="first").reset_index(drop=True)
+    if len(df_novo) < antes:
+        print(f"  [dedup interno] removidas {antes - len(df_novo)} linhas duplicadas na coleta")
+
+    # ── 2. Lê planilha ───────────────────────────────────────────────────────
+    values = aba.get_all_values()
+
+    # ── 3. Aba vazia: grava tudo com header ─────────────────────────────────
+    if _aba_vazia(values):
+        data_to_write = [df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist()
         aba.clear()
-        aba.update([df_full.columns.tolist()] + df_full.fillna("").values.tolist())
-        return len(df_novo), len(df_exist)
+        aba.update(data_to_write)
+        print(f"  [aba vazia] {len(df_novo)} linhas gravadas")
+        return len(df_novo), 0
 
-    idx = header.index(key_col)
-    existing_keys = set()
-    for r in values[1:]:
-        if len(r) > idx and r[idx]:
-            existing_keys.add(r[idx])
+    # ── 4. Lê chaves existentes ──────────────────────────────────────────────
+    header_existente = values[0]
 
-    df_add = df_novo[~df_novo[key_col].astype(str).isin(existing_keys)]
+    if key_col not in header_existente:
+        # Chave ainda não existe na planilha (ex.: primeira execução com coluna nova).
+        # Adiciona o header correto e grava tudo do zero para alinhar colunas,
+        # mas só depois de garantir que não há dados anteriores relevantes.
+        # Como não há como fazer dedup sem a coluna-chave, optamos por
+        # sobrescrever — situação excepcional de migração de schema.
+        print(f"  [AVISO] coluna '{key_col}' não encontrada no header existente. Reescrevendo aba.")
+        data_to_write = [df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist()
+        aba.clear()
+        aba.update(data_to_write)
+        return len(df_novo), 0
+
+    idx_key = header_existente.index(key_col)
+    existing_keys = {
+        row[idx_key]
+        for row in values[1:]
+        if len(row) > idx_key and row[idx_key].strip()
+    }
+
+    # ── 5. Filtra apenas linhas novas ────────────────────────────────────────
+    df_add = df_novo[~df_novo[key_col].astype(str).isin(existing_keys)].reset_index(drop=True)
+
     if df_add.empty:
+        print(f"  [sem novidades] todas as {len(existing_keys)} chaves já existem")
         return 0, len(existing_keys)
 
-    if header != df_novo.columns.tolist():
-        df_exist = pd.DataFrame(values[1:], columns=header)
-        df_full = pd.concat([df_exist, df_add], ignore_index=True)
-        aba.clear()
-        aba.update([df_full.columns.tolist()] + df_full.fillna("").values.tolist())
-    else:
-        aba.append_rows(df_add.fillna("").values.tolist())
+    # ── 6. Alinha colunas do df_add ao header existente ─────────────────────
+    # Se o header da planilha for diferente (colunas extras / ordem diferente),
+    # reordena / preenche para não desalinhar colunas ao fazer append.
+    if header_existente != df_add.columns.tolist():
+        # Colunas que existem no df mas não no header → adiciona ao header da planilha
+        colunas_novas = [c for c in df_add.columns if c not in header_existente]
+        if colunas_novas:
+            header_final = header_existente + colunas_novas
+            # Atualiza o header na planilha (só a 1ª linha)
+            aba.update([header_final], range_name="A1")
+            print(f"  [schema] {len(colunas_novas)} coluna(s) nova(s) adicionada(s) ao header: {colunas_novas}")
+        else:
+            header_final = header_existente
 
+        # Reordena df_add para bater com header_final, preenchendo ausentes com ""
+        df_add = df_add.reindex(columns=header_final, fill_value="")
+
+    # ── 7. Append apenas das linhas novas ───────────────────────────────────
+    rows_to_append = df_add.fillna("").astype(str).values.tolist()
+    aba.append_rows(rows_to_append, value_input_option="RAW", insert_data_option="INSERT_ROWS")
+
+    print(f"  [insert] {len(df_add)} linha(s) nova(s) | {len(existing_keys)} já existiam")
     return len(df_add), len(existing_keys)
 
 
@@ -485,8 +529,8 @@ def main():
     gc = gs_client_from_env()
     sh = gc.open_by_key(sheet_id)
 
-    aba_pesquisas = garantir_aba(sh, "pesquisas", rows=2000, cols=20)
-    aba_resultados = garantir_aba(sh, "resultados", rows=2000, cols=20)
+    aba_pesquisas = garantir_aba(sh, "pesquisas", rows=5000, cols=20)
+    aba_resultados = garantir_aba(sh, "resultados", rows=20000, cols=25)
 
     print("[+] Iniciando Chrome...")
     driver = criar_driver()
@@ -509,19 +553,20 @@ def main():
     if all_p:
         df_p_all = pd.concat(all_p, ignore_index=True)
         novos, exist = dedup_e_salvar_por_chave(aba_pesquisas, df_p_all, key_col="scenario_id")
-        print(f"[+] pesquisas: {novos} novas linhas ({exist} já existiam)")
+        print(f"[+] pesquisas: {novos} novas linhas | {exist} já existiam")
     else:
         print("[-] pesquisas: nada coletado")
 
     if all_r:
         df_r_all = pd.concat(all_r, ignore_index=True)
+        # Chave composta para resultados: cenário + tipo + candidato
         df_r_all["_dedup_key"] = (
             df_r_all["scenario_id"].astype(str)
             + "|" + df_r_all["tipo"].astype(str)
             + "|" + df_r_all["candidato_norm"].astype(str)
         )
         novos, exist = dedup_e_salvar_por_chave(aba_resultados, df_r_all, key_col="_dedup_key")
-        print(f"[+] resultados: {novos} novas linhas ({exist} já existiam)")
+        print(f"[+] resultados: {novos} novas linhas | {exist} já existiam")
     else:
         print("[-] resultados: nada coletado")
 
