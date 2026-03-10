@@ -498,7 +498,7 @@ def main():
         print("[-] Nenhuma URL selecionada. Ajuste INCLUDE_*.")
         return
 
-    horario_raspagem = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    horario_raspagem = datetime.now(zoneinfo.ZoneInfo("America/Recife")).strftime("%Y-%m-%d %H:%M:%S")
 
     print("[+] Conectando ao Google Sheets...")
     gc = gs_client_from_env()
