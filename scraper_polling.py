@@ -19,7 +19,7 @@ try:
 except Exception:
     _HAS_WDM = False
 
-# --- CONFIGURAÇÕES ---
+
 UFS = [
     "ac", "al", "am", "ap", "ba", "ce", "df", "es", "go",
     "ma", "mg", "ms", "mt", "pa", "pb", "pe", "pi", "pr",
@@ -32,85 +32,160 @@ PRESIDENTE_URLS_DEFAULT = [
 
 WAIT_CSS = "div#dados-das-pesquisas"
 
-# --- UTILITÁRIOS ---
+
 def env_bool(name: str, default: bool = False) -> bool:
     v = (os.getenv(name, "") or "").strip().lower()
-    if v == "": return default
+    if v == "":
+        return default
     return v in ("1", "true", "t", "yes", "y", "sim", "on")
+
 
 def _norm_ws(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()
+
 
 def _slug(s: str) -> str:
     s = _norm_ws(s).lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return s
 
+
 def _sha1_short(s: str, n=10) -> str:
     return hashlib.sha1(str(s).encode("utf-8", errors="ignore")).hexdigest()[:n]
 
+
 def parse_url_meta(url: str):
     u = url.strip()
-    # Governador
-    m = re.search(r"/(?P<ano>\d{4})/(?P<cargo>governador)/(?P<uf>[a-z]{2})/.*?_t(?P<turno>\d)\.html", u, re.I)
+
+    m = re.search(
+        r"/(?P<ano>\d{4})/(?P<cargo>governador)/(?P<uf>[a-z]{2})/.*?_t(?P<turno>\d)\.html",
+        u, re.I
+    )
     if m:
-        return {"ano": int(m.group("ano")), "cargo": "governador", "uf": m.group("uf").upper(), "turno": f"t{m.group('turno')}"}
-    # Presidente
-    m = re.search(r"/(?P<ano>\d{4})/(?P<cargo>presidente)/(?P<uf>br)/(?P<turno>t\d)", u, re.I)
+        return {
+            "ano": int(m.group("ano")),
+            "cargo": "governador",
+            "uf": m.group("uf").upper(),
+            "turno": f"t{m.group('turno')}",
+        }
+
+    m = re.search(
+        r"/(?P<ano>\d{4})/(?P<cargo>presidente)/(?P<uf>br)/(?P<turno>t\d)",
+        u, re.I
+    )
     if m:
-        return {"ano": int(m.group("ano")), "cargo": "presidente", "uf": "BR", "turno": m.group("turno").lower()}
-    # Senador
-    m = re.search(r"/(?P<ano>\d{4})/(?P<cargo>senador)/(?P<uf>[a-z]{2})/(?P<turno>t\d)/?$", u, re.I)
+        return {
+            "ano": int(m.group("ano")),
+            "cargo": "presidente",
+            "uf": "BR",
+            "turno": m.group("turno").lower(),
+        }
+
+    m = re.search(
+        r"/(?P<ano>\d{4})/(?P<cargo>senador)/(?P<uf>[a-z]{2})/(?P<turno>t\d)/?$",
+        u, re.I
+    )
     if m:
-        return {"ano": int(m.group("ano")), "cargo": "senador", "uf": m.group("uf").upper(), "turno": m.group("turno").lower()}
+        return {
+            "ano": int(m.group("ano")),
+            "cargo": "senador",
+            "uf": m.group("uf").upper(),
+            "turno": m.group("turno").lower(),
+        }
+
     return {"ano": None, "cargo": None, "uf": None, "turno": None}
+
 
 def parsear_pesquisa(texto):
     nome, id_pesquisa, data = "", "", ""
     linhas = [l.strip() for l in str(texto).strip().split("\n") if l.strip()]
     for linha in linhas:
-        if re.match(r"^\(\d+\)$", linha): continue
+        if re.match(r"^\(\d+\)$", linha):
+            continue
         match_data = re.search(r"(\d{4}-\d{2}-\d{2})", linha)
         if match_data:
             data = match_data.group(1)
             antes = linha[:linha.index(data)].strip()
-            if antes: id_pesquisa = antes
+            if antes:
+                id_pesquisa = antes
         else:
             nome = re.sub(r"\s*\(\d+\)\s*$", "", linha).strip()
     return _norm_ws(nome), _norm_ws(id_pesquisa), _norm_ws(data)
 
+
 def parsear_pct(valor):
     v = str(valor).strip()
-    if not v or v in ("-", "NaN%", "nan%", "NaN", "nan", ""): return None
+    if not v or v in ("-", "NaN%", "nan%", "NaN", "nan", ""):
+        return None
     try:
         return float(v.replace("%", "").replace(",", ".").strip())
-    except Exception: return None
+    except Exception:
+        return None
+
 
 def parsear_candidato_partido(col_header):
     m = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", str(col_header).strip())
-    if m: return _norm_ws(m.group(1)), _norm_ws(m.group(2))
+    if m:
+        return _norm_ws(m.group(1)), _norm_ws(m.group(2))
     return _norm_ws(col_header), ""
+
 
 def inferir_confianca(erro_conf):
     s = str(erro_conf or "")
     m = re.search(r"(\d{2,3})\s*%\s*\)", s)
-    return int(m.group(1)) if m else None
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+    return None
+
 
 def inferir_margem_erro(erro_conf):
     s = str(erro_conf or "").replace(",", ".")
     m = re.search(r"(\d+(?:\.\d+)?)\s*%", s)
-    return float(m.group(1)) if m else None
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            return None
+    return None
+
 
 def gerar_poll_id(uf, instituto, id_pesquisa, data_campo, cargo, turno, raw_block_hash):
-    uf, data_campo, instituto_slug = uf.upper(), _norm_ws(data_campo), _slug(instituto)
+    uf = uf.upper()
+    data_campo = _norm_ws(data_campo)
+    instituto_slug = _slug(instituto)
+
     if id_pesquisa and id_pesquisa.lower() not in ("sem registro", "sem_registro", "semregistro", "nan"):
         return f"{uf}|{cargo}|{turno}|{id_pesquisa}|{data_campo}"
+
     return f"{uf}|{cargo}|{turno}|{instituto_slug}|{data_campo}|{raw_block_hash}"
+
 
 def gerar_scenario_id(poll_id, scenario_label):
     return f"{poll_id}|{_norm_ws(scenario_label)}"
 
-# --- SELENIUM CORE ---
+
+def urls_governador_2026_t1(ufs):
+    return [f"https://www.pollingdata.com.br/2026/governador/{uf}/2026_governador_{uf}_t1.html" for uf in ufs]
+
+
+def urls_senado_2026_t1(ufs):
+    return [f"https://www.pollingdata.com.br/2026/senador/{uf}/t1/" for uf in ufs]
+
+
+def montar_urls(incluir_governador: bool, incluir_senado: bool, incluir_presidente: bool):
+    urls = []
+    if incluir_governador:
+        urls += urls_governador_2026_t1(UFS)
+    if incluir_senado:
+        urls += urls_senado_2026_t1(UFS)
+    if incluir_presidente:
+        urls += list(PRESIDENTE_URLS_DEFAULT)
+    return urls
+
+
 def criar_driver():
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
@@ -130,16 +205,20 @@ def criar_driver():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-def expandir_todos(driver, secao, max_clicks=150):
+
+def expandir_todos(driver, secao, max_clicks=120):
     i = 0
     while True:
         btns = secao.find_elements(By.CSS_SELECTOR, "button.rt-expander-button")
         fechados = [b for b in btns if b.get_attribute("aria-expanded") == "false"]
-        if not fechados: break
+        if not fechados:
+            break
         driver.execute_script("arguments[0].click();", fechados[0])
-        time.sleep(0.8) # Ritmo crucial para o React não quebrar
+        time.sleep(0.6)
         i += 1
-        if i >= max_clicks: break
+        if i >= max_clicks:
+            break
+
 
 def extrair_tabela_react(secao):
     headers = []
@@ -147,33 +226,43 @@ def extrair_tabela_react(secao):
         inner = el.find_elements(By.CSS_SELECTOR, ".rt-text-content, .rt-sort-header")
         text = inner[0].text.strip() if inner else el.text.strip()
         text = text.replace("\n", " ").strip()
-        if text: headers.append(text)
+        if text:
+            headers.append(text)
 
     rows_data = []
     for group in secao.find_elements(By.CSS_SELECTOR, "div.rt-tbody div.rt-tr-group"):
         for row in group.find_elements(By.CSS_SELECTOR, "div.rt-tr"):
             cells = row.find_elements(By.CSS_SELECTOR, "div.rt-td")
-            if not cells: continue
+            if not cells:
+                continue
             vals = [c.text.strip() for c in cells]
-            if any(vals): rows_data.append(vals)
+            if any(vals):
+                rows_data.append(vals)
 
-    if not rows_data: return None
+    if not rows_data:
+        return None
+
     n_cols = max(len(r) for r in rows_data)
     if len(headers) < n_cols:
         headers += [f"Col_{i}" for i in range(len(headers), n_cols)]
-    return pd.DataFrame(rows_data, columns=headers[:n_cols])
+    headers = headers[:n_cols]
+
+    return pd.DataFrame(rows_data, columns=headers)
+
 
 def scrape_url(driver, url: str):
     meta = parse_url_meta(url)
-    if not meta["cargo"]:
+    ano = meta["ano"]
+    cargo = meta["cargo"]
+    uf = meta["uf"]
+    turno = meta["turno"]
+
+    if not cargo or not uf or not turno:
         print(f"[-] URL não reconhecida: {url}")
         return None, None
 
-    print(f"[+] {meta['cargo'].upper()} {meta['uf']} {meta['turno']} -> {url}")
+    print(f"[+] {cargo.upper()} {uf} {turno} -> {url}")
     driver.get(url)
-    
-    # ESPERA CRUCIAL: 10 segundos para carregar as pesquisas mais recentes via React
-    time.sleep(10)
 
     try:
         wait = WebDriverWait(driver, 40)
@@ -182,13 +271,12 @@ def scrape_url(driver, url: str):
         print(f"  [-] timeout (sem container)")
         return None, None
 
-    time.sleep(2)
+    time.sleep(1.5)
     secao = driver.find_element(By.CSS_SELECTOR, WAIT_CSS)
     expandir_todos(driver, secao)
-    time.sleep(2)
-    
-    # Re-localiza para evitar erros após manipulação do DOM
+    time.sleep(1.0)
     secao = driver.find_element(By.CSS_SELECTOR, WAIT_CSS)
+
     df_raw = extrair_tabela_react(secao)
     if df_raw is None or df_raw.empty:
         print(f"  [-] sem tabela")
@@ -204,136 +292,286 @@ def scrape_url(driver, url: str):
     df_raw["_block_hash"] = df_raw[col_pesquisa].apply(lambda x: _sha1_short(_norm_ws(x), 10))
     df_raw = df_raw.drop(columns=[col_pesquisa])
 
-    if "Cenários" not in df_raw.columns: df_raw["Cenários"] = ""
+    if "Cenários" not in df_raw.columns:
+        df_raw["Cenários"] = ""
 
     meta_expected = {"Modo Pesquisa", "Entrevistas", "Erro (Confiança)", "Cenários"}
     cols_meta = [c for c in df_raw.columns if c in meta_expected] + ["instituto", "registro_tse", "data_campo", "_block_hash"]
     cols_meta = [c for c in cols_meta if c in df_raw.columns]
 
     cols_cand = [c for c in df_raw.columns if c not in cols_meta]
-    cols_cand = [c for c in cols_cand if re.search(r"\([A-Za-z]{2,}\)", str(c)) or str(c).lower().strip() in ("não válido", "nao valido")]
+    cols_cand = [
+        c for c in cols_cand
+        if re.search(r"\([A-Za-z]{2,}\)", str(c)) or str(c).lower().strip() in ("não válido", "nao valido")
+    ]
 
-    pesquisas_rows, resultados_rows = [], []
+    pesquisas_rows = []
+    resultados_rows = []
 
     for _, row in df_raw.iterrows():
-        # Dados da Pesquisa
-        poll_id = gerar_poll_id(meta["uf"], row["instituto"], row["registro_tse"], row["data_campo"], meta["cargo"], meta["turno"], row["_block_hash"])
+        instituto = _norm_ws(row.get("instituto", ""))
+        registro_tse = _norm_ws(row.get("registro_tse", ""))
+        data_campo = _norm_ws(row.get("data_campo", ""))
+        modo = _norm_ws(row.get("Modo Pesquisa", ""))
+        entrevistas_raw = _norm_ws(row.get("Entrevistas", ""))
+        erro_conf = _norm_ws(row.get("Erro (Confiança)", ""))
         scenario_label = _norm_ws(row.get("Cenários", "")) or "NA"
+        block_hash = _norm_ws(row.get("_block_hash", ""))
+
+        poll_id = gerar_poll_id(uf, instituto, registro_tse, data_campo, cargo, turno, block_hash)
         scenario_id = gerar_scenario_id(poll_id, scenario_label)
 
+        amostra = None
+        try:
+            if entrevistas_raw and str(entrevistas_raw).strip().isdigit():
+                amostra = int(str(entrevistas_raw).strip())
+        except Exception:
+            amostra = None
+
+        margem = inferir_margem_erro(erro_conf)
+        confianca = inferir_confianca(erro_conf)
+
         pesquisas_rows.append({
-            "scenario_id": scenario_id, "poll_id": poll_id, "ano": meta["ano"], "uf": meta["uf"],
-            "cargo": meta["cargo"], "turno": meta["turno"], "instituto": row["instituto"],
-            "registro_tse": row["registro_tse"], "data_campo": row["data_campo"],
-            "modo": _norm_ws(row.get("Modo Pesquisa", "")), "amostra": row.get("Entrevistas", ""),
-            "margem_erro": inferir_margem_erro(row.get("Erro (Confiança)", "")),
-            "confianca": inferir_confianca(row.get("Erro (Confiança)", "")),
-            "scenario_label": scenario_label, "fonte_url": url
+            "scenario_id": scenario_id,
+            "poll_id": poll_id,
+            "ano": ano,
+            "uf": uf,
+            "cargo": cargo,
+            "turno": turno,
+            "instituto": instituto,
+            "registro_tse": registro_tse,
+            "data_campo": data_campo,
+            "modo": modo,
+            "amostra": amostra,
+            "margem_erro": margem,
+            "confianca": confianca,
+            "scenario_label": scenario_label,
+            "fonte_url": url,
         })
 
-        # Resultados por Candidato
         for col in cols_cand:
+            colname = _norm_ws(col)
             pct = parsear_pct(row.get(col, ""))
-            if pct is None: continue
 
-            if _norm_ws(col).lower() in ("não válido", "nao valido"):
-                candidato, partido, tipo, cand_norm = "Não válido", "", "nao_valido", "nao-valido"
+            if pct is None:
+                continue
+
+            if colname.lower() in ("não válido", "nao valido"):
+                candidato = "Não válido"
+                partido = ""
+                tipo = "nao_valido"
+                candidato_norm = "nao-valido"
             else:
-                candidato, partido = parsear_candidato_partido(col)
-                tipo, cand_norm = "candidato", _slug(candidato)
+                candidato, partido = parsear_candidato_partido(colname)
+                tipo = "candidato"
+                candidato_norm = _slug(candidato)
 
             resultados_rows.append({
-                "scenario_id": scenario_id, "poll_id": poll_id, "ano": meta["ano"], "uf": meta["uf"],
-                "cargo": meta["cargo"], "turno": meta["turno"], "data_campo": row["data_campo"],
-                "instituto": row["instituto"], "scenario_label": scenario_label,
-                "candidato": candidato, "candidato_norm": cand_norm, "partido": partido,
-                "tipo": tipo, "percentual": pct, "fonte_url": url
+                "scenario_id": scenario_id,
+                "poll_id": poll_id,
+                "ano": ano,
+                "uf": uf,
+                "cargo": cargo,
+                "turno": turno,
+                "data_campo": data_campo,
+                "instituto": instituto,
+                "scenario_label": scenario_label,
+                "candidato": candidato,
+                "candidato_norm": candidato_norm,
+                "partido": partido,
+                "tipo": tipo,
+                "percentual": pct,
+                "fonte_url": url,
             })
 
-    return pd.DataFrame(pesquisas_rows), pd.DataFrame(resultados_rows)
+    df_p = pd.DataFrame(pesquisas_rows)
+    df_r = pd.DataFrame(resultados_rows)
 
-# --- GOOGLE SHEETS INTEGRATION ---
+    print(f"  [+] {len(df_p)} cenários | {len(df_r)} resultados")
+    return df_p, df_r
+
+
 def gs_client_from_env():
     raw = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
-    if not raw: raise RuntimeError("GOOGLE_CREDENTIALS_JSON não definido.")
+    if not raw:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON não definido (GitHub secret).")
+
     creds_dict = json.loads(raw)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    return gspread.authorize(Credentials.from_service_account_info(creds_dict, scopes=scopes))
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(credentials)
+
 
 def garantir_aba(spreadsheet, nome_aba, rows=2000, cols=20):
-    try: return spreadsheet.worksheet(nome_aba)
-    except gspread.exceptions.WorksheetNotFound: return spreadsheet.add_worksheet(title=nome_aba, rows=rows, cols=cols)
+    try:
+        return spreadsheet.worksheet(nome_aba)
+    except gspread.exceptions.WorksheetNotFound:
+        return spreadsheet.add_worksheet(title=nome_aba, rows=rows, cols=cols)
+
+
+def _aba_vazia(values):
+    if not values:
+        return True
+    if len(values) == 1 and (not values[0] or all(str(x).strip() == "" for x in values[0])):
+        return True
+    if len(values) == 1 and len(values[0]) == 1 and str(values[0][0]).strip() == "":
+        return True
+    return False
+
 
 def dedup_e_salvar_por_chave(aba, df_novo: pd.DataFrame, key_col: str):
+    """
+    Insere apenas linhas cujo key_col ainda não existe na aba.
+
+    Estratégia:
+    1. Lê todos os dados existentes.
+    2. Deduplica o df_novo internamente (garante que a coleta atual não tem
+       duplicatas antes de comparar com o que já está na planilha).
+    3. Filtra apenas as linhas com chave nova.
+    4. Se a aba estiver vazia, grava tudo (header + dados).
+    5. Caso contrário, faz append apenas das linhas novas — nunca reescreve
+       o que já existe, eliminando o risco de duplicação em caso de header
+       divergente entre execuções.
+    """
+
+    if key_col not in df_novo.columns:
+        raise RuntimeError(f"df_novo não tem coluna de chave: '{key_col}'")
+
+    # ── 1. Dedup interno da coleta atual ────────────────────────────────────
+    antes = len(df_novo)
     df_novo = df_novo.drop_duplicates(subset=[key_col], keep="first").reset_index(drop=True)
+    if len(df_novo) < antes:
+        print(f"  [dedup interno] removidas {antes - len(df_novo)} linhas duplicadas na coleta")
+
+    # ── 2. Lê planilha ───────────────────────────────────────────────────────
     values = aba.get_all_values()
 
-    # Se a aba estiver vazia
-    if not values or (len(values) == 1 and not values[0][0]):
-        aba.update([df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist())
-        return len(df_novo), 0
-
-    header = values[0]
-    if key_col not in header:
-        print(f"[AVISO] Coluna {key_col} não encontrada. Reescrevendo aba.")
+    # ── 3. Aba vazia: grava tudo com header ─────────────────────────────────
+    if _aba_vazia(values):
+        data_to_write = [df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist()
         aba.clear()
-        aba.update([df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist())
+        aba.update(data_to_write)
+        print(f"  [aba vazia] {len(df_novo)} linhas gravadas")
         return len(df_novo), 0
 
-    idx_key = header.index(key_col)
-    existing_keys = {row[idx_key] for row in values[1:] if len(row) > idx_key and row[idx_key].strip()}
-    
-    df_add = df_novo[~df_novo[key_col].astype(str).isin(existing_keys)].reset_index(drop=True)
-    if df_add.empty: return 0, len(existing_keys)
+    # ── 4. Lê chaves existentes ──────────────────────────────────────────────
+    header_existente = values[0]
 
-    # Alinha colunas e faz Append
-    df_add = df_add.reindex(columns=header, fill_value="")
-    aba.append_rows(df_add.fillna("").astype(str).values.tolist(), value_input_option="RAW")
+    if key_col not in header_existente:
+        # Chave ainda não existe na planilha (ex.: primeira execução com coluna nova).
+        # Adiciona o header correto e grava tudo do zero para alinhar colunas,
+        # mas só depois de garantir que não há dados anteriores relevantes.
+        # Como não há como fazer dedup sem a coluna-chave, optamos por
+        # sobrescrever — situação excepcional de migração de schema.
+        print(f"  [AVISO] coluna '{key_col}' não encontrada no header existente. Reescrevendo aba.")
+        data_to_write = [df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist()
+        aba.clear()
+        aba.update(data_to_write)
+        return len(df_novo), 0
+
+    idx_key = header_existente.index(key_col)
+    existing_keys = {
+        row[idx_key]
+        for row in values[1:]
+        if len(row) > idx_key and row[idx_key].strip()
+    }
+
+    # ── 5. Filtra apenas linhas novas ────────────────────────────────────────
+    df_add = df_novo[~df_novo[key_col].astype(str).isin(existing_keys)].reset_index(drop=True)
+
+    if df_add.empty:
+        print(f"  [sem novidades] todas as {len(existing_keys)} chaves já existem")
+        return 0, len(existing_keys)
+
+    # ── 6. Alinha colunas do df_add ao header existente ─────────────────────
+    # Se o header da planilha for diferente (colunas extras / ordem diferente),
+    # reordena / preenche para não desalinhar colunas ao fazer append.
+    if header_existente != df_add.columns.tolist():
+        # Colunas que existem no df mas não no header → adiciona ao header da planilha
+        colunas_novas = [c for c in df_add.columns if c not in header_existente]
+        if colunas_novas:
+            header_final = header_existente + colunas_novas
+            # Atualiza o header na planilha (só a 1ª linha)
+            aba.update([header_final], range_name="A1")
+            print(f"  [schema] {len(colunas_novas)} coluna(s) nova(s) adicionada(s) ao header: {colunas_novas}")
+        else:
+            header_final = header_existente
+
+        # Reordena df_add para bater com header_final, preenchendo ausentes com ""
+        df_add = df_add.reindex(columns=header_final, fill_value="")
+
+    # ── 7. Append apenas das linhas novas ───────────────────────────────────
+    rows_to_append = df_add.fillna("").astype(str).values.tolist()
+    aba.append_rows(rows_to_append, value_input_option="RAW", insert_data_option="INSERT_ROWS")
+
+    print(f"  [insert] {len(df_add)} linha(s) nova(s) | {len(existing_keys)} já existiam")
     return len(df_add), len(existing_keys)
 
-# --- MAIN ---
+
 def main():
     sheet_id = (os.getenv("SPREADSHEET_ID_POLLING", "") or "").strip()
-    if not sheet_id: raise RuntimeError("SPREADSHEET_ID_POLLING não definido.")
+    if not sheet_id:
+        raise RuntimeError("SPREADSHEET_ID_POLLING não definido (GitHub secret).")
 
-    urls = []
-    if env_bool("INCLUIR_GOVERNADOR", True):
-        urls += [f"https://www.pollingdata.com.br/2026/governador/{uf}/2026_governador_{uf}_t1.html" for uf in UFS]
-    if env_bool("INCLUIR_PRESIDENTE", False):
-        urls += PRESIDENTE_URLS_DEFAULT
+    incluir_governador = env_bool("INCLUIR_GOVERNADOR", True)
+    incluir_senado = env_bool("INCLUIR_SENADO", False)
+    incluir_presidente = env_bool("INCLUIR_PRESIDENTE", False)
 
-    if not urls: return print("[-] Nenhuma URL selecionada.")
+    urls = montar_urls(incluir_governador, incluir_senado, incluir_presidente)
+    if not urls:
+        print("[-] Nenhuma URL selecionada. Ajuste INCLUDE_*.")
+        return
 
     print("[+] Conectando ao Google Sheets...")
     gc = gs_client_from_env()
     sh = gc.open_by_key(sheet_id)
-    aba_pesquisas = garantir_aba(sh, "pesquisas", rows=10000, cols=20)
-    aba_resultados = garantir_aba(sh, "resultados", rows=100000, cols=25)
+
+    aba_pesquisas = garantir_aba(sh, "pesquisas", rows=5000, cols=20)
+    aba_resultados = garantir_aba(sh, "resultados", rows=20000, cols=25)
 
     print("[+] Iniciando Chrome...")
     driver = criar_driver()
-    all_p, all_r = [], []
+
+    all_p = []
+    all_r = []
 
     try:
         for url in urls:
             df_p, df_r = scrape_url(driver, url)
-            if df_p is not None: all_p.append(df_p)
-            if df_r is not None: all_r.append(df_r)
+            if df_p is not None and not df_p.empty:
+                all_p.append(df_p)
+            if df_r is not None and not df_r.empty:
+                all_r.append(df_r)
     finally:
         driver.quit()
 
+    print("[+] Salvando...")
+
     if all_p:
         df_p_all = pd.concat(all_p, ignore_index=True)
-        n, e = dedup_e_salvar_por_chave(aba_pesquisas, df_p_all, "scenario_id")
-        print(f"[+] Pesquisas: {n} novas | {e} já existiam")
+        novos, exist = dedup_e_salvar_por_chave(aba_pesquisas, df_p_all, key_col="scenario_id")
+        print(f"[+] pesquisas: {novos} novas linhas | {exist} já existiam")
+    else:
+        print("[-] pesquisas: nada coletado")
 
     if all_r:
         df_r_all = pd.concat(all_r, ignore_index=True)
-        df_r_all["_dedup_key"] = df_r_all["scenario_id"].astype(str) + "|" + df_r_all["tipo"] + "|" + df_r_all["candidato_norm"]
-        n, e = dedup_e_salvar_por_chave(aba_resultados, df_r_all, "_dedup_key")
-        print(f"[+] Resultados: {n} novas | {e} já existiam")
+        # Chave composta para resultados: cenário + tipo + candidato
+        df_r_all["_dedup_key"] = (
+            df_r_all["scenario_id"].astype(str)
+            + "|" + df_r_all["tipo"].astype(str)
+            + "|" + df_r_all["candidato_norm"].astype(str)
+        )
+        novos, exist = dedup_e_salvar_por_chave(aba_resultados, df_r_all, key_col="_dedup_key")
+        print(f"[+] resultados: {novos} novas linhas | {exist} já existiam")
+    else:
+        print("[-] resultados: nada coletado")
 
-    print("[+] Concluído com sucesso.")
+    print("[+] OK")
+
 
 if __name__ == "__main__":
     main()
