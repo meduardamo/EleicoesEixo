@@ -34,6 +34,131 @@ PRESIDENTE_URLS_DEFAULT = [
 
 WAIT_CSS = "div#dados-das-pesquisas"
 
+CLASSIFICACAO_INSTITUTOS = {
+    "Datafolha": "A+",
+    "AtlasIntel": "A+",
+    "Jornal Girassol": "A+",
+    "Gazeta Dados": "A+",
+    "Jornal Stylo": "A+",
+    "MDA": "A+",
+    "MAS Opinião": "A",
+    "Badra Comunicação": "A",
+    "Ibope": "A",
+    "DMP": "A",
+    "Paraná Pesquisas": "A",
+    "Real Time Big Data": "A",
+    "Grupo M": "A",
+    "Futura": "A-",
+    "Instituto Amostragem": "A-",
+    "Instituto Gasparetto de Pesquisas": "A-",
+    "Serpes": "A-",
+    "Perfil Pesquisas Técnicas (RN)": "A-",
+    "Voice Pesquisas (MT)": "A-",
+    "Govnet/Instituto Opinião (SP)": "A-",
+    "Instituto Econométrica": "B+",
+    "MT Dados": "B+",
+    "Instituto de Pesquisa Resultado (MS)": "B+",
+    "Data M": "B+",
+    "6 Sigma": "B+",
+    "Prever Pesquisas": "B+",
+    "Solução Treinamento": "B+",
+    "Ágora Pesquisa (RJ)": "B",
+    "EPP": "B",
+    "Exata Pesquisa (MA)": "B",
+    "Instituto Jales": "B",
+    "Dataqualy": "B",
+    "Painel Brasil": "B",
+    "Brand Consultoria": "B",
+    "Instituto Opinião (PR)": "B",
+    "INOPE": "B",
+    "Vox Populi": "B",
+    "IPEMS": "B",
+    "Dataform": "B",
+    "Real Dados": "B",
+    "Incope": "B",
+    "Instituto Datailha": "B-",
+    "Tendência Pesquisa (SC)": "B-",
+    "Certifica Consultoria": "B-",
+    "Opinar Pesquisas": "B-",
+    "FLS Pesquisa": "B-",
+    "IPAT": "B-",
+    "Dados Pesquisa (GO)": "B-",
+    "Agora Pesquisa (BA)": "B-",
+    "Pontual Pesquisas (AM)": "B-",
+    "ABC Dados": "B-",
+    "Mapa Marketing": "B-",
+    "Múltipla Pesquisa (PE)": "B-",
+    "Instituto Haverroth": "B-",
+    "IPPEC (PR)": "B-",
+    "IABR": "B-",
+    "CP2 Pesquisa": "B-",
+    "RF Consultoria": "B-",
+    "IRG Consultoria": "B-",
+    "Fortiori": "B-",
+    "Colectta Consultoria": "B-",
+    "Consult Pesquisa (RN)": "B-",
+    "Agorasei Pesquisa": "B-",
+    "BMO": "B-",
+    "Opinião Pesquisas (PB)": "B-",
+    "Ipespe": "B-",
+    "Quaest": "B-",
+    "W J Mendes": "B-",
+    "Instituto Qualitativa": "B-",
+    "Folha Capital": "C+",
+    "AR7 Pesquisa": "C+",
+    "Veritá": "C+",
+    "Instituto Methodus": "C+",
+    "Estimativa": "C+",
+    "Camminus Marketing": "C+",
+    "Doxa": "C+",
+    "R M Mariath": "C+",
+    "Equação Pesquisas": "C+",
+    "Instituto Seta": "C+",
+    "Polo Pesquisas": "C+",
+    "Ranking Pesquisa": "C+",
+    "Index Pesquisas": "C+",
+    "Potencial": "C+",
+    "F5 Atualiza Dados": "C",
+    "Jornal Correio Continental": "C",
+    "MBO": "C",
+    "Comunicare": "C",
+    "Naipes Marketing": "C",
+    "Instituto Exatta (PE)": "C",
+    "Escutec": "C",
+    "Instituto França": "C",
+    "Ibrape": "C",
+    "Instituto Datasensus": "C",
+    "INOP": "C",
+    "Instituto Vope": "C",
+    "Vox Opinião Pública (SP)": "C",
+    "Surgiu Pesquisas": "C",
+    "Alternativa Dados": "C-",
+    "Seculus Consultoria": "C-",
+    "Datavox (PB)": "C-",
+    "Instituto Credibilidade": "C-",
+    "Multidados": "C-",
+    "Voga Pesquisas": "C-",
+    "Jornal O+Positivo": "C-",
+    "Studio Pesquisas": "C-",
+    "Brasil Dados": "C-",
+    "Census Pesquisas": "C-",
+    "Exatus Consultoria (RN)": "C-",
+    "Infornews": "C-",
+    "Zaytec Brasil": "C-",
+    "Access": "C-",
+    "Brasmarket": "N",
+    "DataPoder360": "N",
+    "FSB Pesquisa": "N",
+    "Gerp": "N",
+    "Ideia Big Data": "N",
+    "Ipec (antigo Ibope)": "N",
+    "Sensus": "N",
+}
+
+
+def classificar_instituto(nome: str) -> str:
+    return CLASSIFICACAO_INSTITUTOS.get(_norm_ws(nome), "Ainda não foi avaliado")
+
 
 def env_bool(name: str, default: bool = False) -> bool:
     v = (os.getenv(name, "") or "").strip().lower()
@@ -334,6 +459,7 @@ def scrape_url(driver, url: str, horario_raspagem: str):
 
         margem = inferir_margem_erro(erro_conf)
         confianca = inferir_confianca(erro_conf)
+        classificacao = classificar_instituto(instituto)
 
         pesquisas_rows.append({
             "scenario_id": scenario_id,
@@ -343,6 +469,7 @@ def scrape_url(driver, url: str, horario_raspagem: str):
             "cargo": cargo,
             "turno": turno,
             "instituto": instituto,
+            "classificacao_instituto": classificacao,
             "registro_tse": registro_tse,
             "data_campo": data_campo,
             "modo": modo,
@@ -379,6 +506,7 @@ def scrape_url(driver, url: str, horario_raspagem: str):
                 "turno": turno,
                 "data_campo": data_campo,
                 "instituto": instituto,
+                "classificacao_instituto": classificacao,
                 "registro_tse": registro_tse,
                 "scenario_label": scenario_label,
                 "candidato": candidato,
@@ -410,7 +538,7 @@ def gs_client_from_env():
     return gspread.authorize(credentials)
 
 
-def garantir_aba(spreadsheet, nome_aba, rows=2000, cols=20):
+def garantir_aba(spreadsheet, nome_aba, rows=2000, cols=25):
     try:
         return spreadsheet.worksheet(nome_aba)
     except gspread.exceptions.WorksheetNotFound:
@@ -506,7 +634,7 @@ def main():
     gc = gs_client_from_env()
     sh = gc.open_by_key(sheet_id)
 
-    aba_pesquisas = garantir_aba(sh, "pesquisas", rows=5000, cols=20)
+    aba_pesquisas = garantir_aba(sh, "pesquisas", rows=5000, cols=25)
     aba_resultados = garantir_aba(sh, "resultados", rows=20000, cols=25)
 
     print("[+] Iniciando Chrome...")
