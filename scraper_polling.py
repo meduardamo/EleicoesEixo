@@ -3,6 +3,7 @@ import re
 import time
 import json
 import hashlib
+from datetime import datetime
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -214,7 +215,7 @@ def expandir_todos(driver, secao, max_clicks=120):
         if not fechados:
             break
         driver.execute_script("arguments[0].click();", fechados[0])
-        time.sleep(0.6)
+        time.sleep(0.8)
         i += 1
         if i >= max_clicks:
             break
@@ -250,7 +251,7 @@ def extrair_tabela_react(secao):
     return pd.DataFrame(rows_data, columns=headers)
 
 
-def scrape_url(driver, url: str):
+def scrape_url(driver, url: str, horario_raspagem: str):
     meta = parse_url_meta(url)
     ano = meta["ano"]
     cargo = meta["cargo"]
@@ -264,6 +265,8 @@ def scrape_url(driver, url: str):
     print(f"[+] {cargo.upper()} {uf} {turno} -> {url}")
     driver.get(url)
 
+    time.sleep(10)  # aguarda carregamento inicial
+
     try:
         wait = WebDriverWait(driver, 40)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, WAIT_CSS)))
@@ -271,10 +274,10 @@ def scrape_url(driver, url: str):
         print(f"  [-] timeout (sem container)")
         return None, None
 
-    time.sleep(1.5)
+    time.sleep(2)
     secao = driver.find_element(By.CSS_SELECTOR, WAIT_CSS)
     expandir_todos(driver, secao)
-    time.sleep(1.0)
+    time.sleep(2)
     secao = driver.find_element(By.CSS_SELECTOR, WAIT_CSS)
 
     df_raw = extrair_tabela_react(secao)
@@ -347,6 +350,8 @@ def scrape_url(driver, url: str):
             "confianca": confianca,
             "scenario_label": scenario_label,
             "fonte_url": url,
+            "horario_raspagem": horario_raspagem,
+            "conferida": "",  # coluna para marcação manual
         })
 
         for col in cols_cand:
@@ -360,11 +365,9 @@ def scrape_url(driver, url: str):
                 candidato = "Não válido"
                 partido = ""
                 tipo = "nao_valido"
-                candidato_norm = "nao-valido"
             else:
                 candidato, partido = parsear_candidato_partido(colname)
                 tipo = "candidato"
-                candidato_norm = _slug(candidato)
 
             resultados_rows.append({
                 "scenario_id": scenario_id,
@@ -375,13 +378,14 @@ def scrape_url(driver, url: str):
                 "turno": turno,
                 "data_campo": data_campo,
                 "instituto": instituto,
+                "registro_tse": registro_tse,
                 "scenario_label": scenario_label,
                 "candidato": candidato,
-                "candidato_norm": candidato_norm,
                 "partido": partido,
                 "tipo": tipo,
                 "percentual": pct,
                 "fonte_url": url,
+                "horario_raspagem": horario_raspagem,
             })
 
     df_p = pd.DataFrame(pesquisas_rows)
@@ -423,33 +427,16 @@ def _aba_vazia(values):
 
 
 def dedup_e_salvar_por_chave(aba, df_novo: pd.DataFrame, key_col: str):
-    """
-    Insere apenas linhas cujo key_col ainda não existe na aba.
-
-    Estratégia:
-    1. Lê todos os dados existentes.
-    2. Deduplica o df_novo internamente (garante que a coleta atual não tem
-       duplicatas antes de comparar com o que já está na planilha).
-    3. Filtra apenas as linhas com chave nova.
-    4. Se a aba estiver vazia, grava tudo (header + dados).
-    5. Caso contrário, faz append apenas das linhas novas — nunca reescreve
-       o que já existe, eliminando o risco de duplicação em caso de header
-       divergente entre execuções.
-    """
-
     if key_col not in df_novo.columns:
         raise RuntimeError(f"df_novo não tem coluna de chave: '{key_col}'")
 
-    # ── 1. Dedup interno da coleta atual ────────────────────────────────────
     antes = len(df_novo)
     df_novo = df_novo.drop_duplicates(subset=[key_col], keep="first").reset_index(drop=True)
     if len(df_novo) < antes:
         print(f"  [dedup interno] removidas {antes - len(df_novo)} linhas duplicadas na coleta")
 
-    # ── 2. Lê planilha ───────────────────────────────────────────────────────
     values = aba.get_all_values()
 
-    # ── 3. Aba vazia: grava tudo com header ─────────────────────────────────
     if _aba_vazia(values):
         data_to_write = [df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist()
         aba.clear()
@@ -457,15 +444,9 @@ def dedup_e_salvar_por_chave(aba, df_novo: pd.DataFrame, key_col: str):
         print(f"  [aba vazia] {len(df_novo)} linhas gravadas")
         return len(df_novo), 0
 
-    # ── 4. Lê chaves existentes ──────────────────────────────────────────────
     header_existente = values[0]
 
     if key_col not in header_existente:
-        # Chave ainda não existe na planilha (ex.: primeira execução com coluna nova).
-        # Adiciona o header correto e grava tudo do zero para alinhar colunas,
-        # mas só depois de garantir que não há dados anteriores relevantes.
-        # Como não há como fazer dedup sem a coluna-chave, optamos por
-        # sobrescrever — situação excepcional de migração de schema.
         print(f"  [AVISO] coluna '{key_col}' não encontrada no header existente. Reescrevendo aba.")
         data_to_write = [df_novo.columns.tolist()] + df_novo.fillna("").astype(str).values.tolist()
         aba.clear()
@@ -479,31 +460,23 @@ def dedup_e_salvar_por_chave(aba, df_novo: pd.DataFrame, key_col: str):
         if len(row) > idx_key and row[idx_key].strip()
     }
 
-    # ── 5. Filtra apenas linhas novas ────────────────────────────────────────
     df_add = df_novo[~df_novo[key_col].astype(str).isin(existing_keys)].reset_index(drop=True)
 
     if df_add.empty:
         print(f"  [sem novidades] todas as {len(existing_keys)} chaves já existem")
         return 0, len(existing_keys)
 
-    # ── 6. Alinha colunas do df_add ao header existente ─────────────────────
-    # Se o header da planilha for diferente (colunas extras / ordem diferente),
-    # reordena / preenche para não desalinhar colunas ao fazer append.
     if header_existente != df_add.columns.tolist():
-        # Colunas que existem no df mas não no header → adiciona ao header da planilha
         colunas_novas = [c for c in df_add.columns if c not in header_existente]
         if colunas_novas:
             header_final = header_existente + colunas_novas
-            # Atualiza o header na planilha (só a 1ª linha)
             aba.update([header_final], range_name="A1")
             print(f"  [schema] {len(colunas_novas)} coluna(s) nova(s) adicionada(s) ao header: {colunas_novas}")
         else:
             header_final = header_existente
 
-        # Reordena df_add para bater com header_final, preenchendo ausentes com ""
         df_add = df_add.reindex(columns=header_final, fill_value="")
 
-    # ── 7. Append apenas das linhas novas ───────────────────────────────────
     rows_to_append = df_add.fillna("").astype(str).values.tolist()
     aba.append_rows(rows_to_append, value_input_option="RAW", insert_data_option="INSERT_ROWS")
 
@@ -525,6 +498,8 @@ def main():
         print("[-] Nenhuma URL selecionada. Ajuste INCLUDE_*.")
         return
 
+    horario_raspagem = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
     print("[+] Conectando ao Google Sheets...")
     gc = gs_client_from_env()
     sh = gc.open_by_key(sheet_id)
@@ -540,7 +515,7 @@ def main():
 
     try:
         for url in urls:
-            df_p, df_r = scrape_url(driver, url)
+            df_p, df_r = scrape_url(driver, url, horario_raspagem)
             if df_p is not None and not df_p.empty:
                 all_p.append(df_p)
             if df_r is not None and not df_r.empty:
@@ -559,11 +534,10 @@ def main():
 
     if all_r:
         df_r_all = pd.concat(all_r, ignore_index=True)
-        # Chave composta para resultados: cenário + tipo + candidato
         df_r_all["_dedup_key"] = (
             df_r_all["scenario_id"].astype(str)
             + "|" + df_r_all["tipo"].astype(str)
-            + "|" + df_r_all["candidato_norm"].astype(str)
+            + "|" + df_r_all["candidato"].astype(str)
         )
         novos, exist = dedup_e_salvar_por_chave(aba_resultados, df_r_all, key_col="_dedup_key")
         print(f"[+] resultados: {novos} novas linhas | {exist} já existiam")
