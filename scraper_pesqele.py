@@ -1,7 +1,7 @@
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 import pandas as pd
@@ -36,9 +36,10 @@ ID_PAGINATOR = "formPesquisa:tabelaPesquisas_paginator_bottom"
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1OEmfn_RyTgrkPenzXlc6qvySs8rbVV39qmuHoULwtjQ")
 CREDS_PATH = "credentials.json"
 
-# deixa 2 linhas livres (banner)
 HEADER_ROW = 3
 DATA_START_ROW = 4
+
+DAYS_BACK = int(os.getenv("DAYS_BACK", "2"))
 
 COLS_BASE = [
     "numero_identificacao",
@@ -116,7 +117,6 @@ def select_one_menu_by_text(
     text: str
 ) -> None:
     open_menu(driver, wait, label_id, panel_id)
-
     panel = driver.find_element(By.ID, panel_id)
     item = panel.find_element(By.XPATH, f".//li[normalize-space()='{text}']")
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", item)
@@ -124,7 +124,6 @@ def select_one_menu_by_text(
         item.click()
     except Exception:
         driver.execute_script("arguments[0].click();", item)
-
     force_close_any_menu(driver)
 
 
@@ -135,10 +134,8 @@ def list_one_menu_items(
     panel_id: str
 ) -> List[str]:
     open_menu(driver, wait, label_id, panel_id)
-
     panel = driver.find_element(By.ID, panel_id)
     lis = panel.find_elements(By.CSS_SELECTOR, "li.ui-selectonemenu-item")
-
     items = []
     for li in lis:
         t = (li.text or "").strip()
@@ -147,7 +144,6 @@ def list_one_menu_items(
         if t.lower() in {"selecione", "[selecione]"}:
             continue
         items.append(t)
-
     force_close_any_menu(driver)
     return items
 
@@ -163,7 +159,6 @@ def click_and_wait_table_refresh(
     except Exception:
         old_tbody = None
 
-    # Re-busca o botão imediatamente antes de cada tentativa de clique
     for attempt in range(3):
         try:
             btn = WebDriverWait(driver, 10).until(
@@ -198,16 +193,36 @@ def dedup_by_numero(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return out
 
 
+def parse_br_date(s: str) -> Optional[datetime]:
+    """Converte DD/MM/YYYY para datetime, retorna None se inválido."""
+    s = (s or "").strip()
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", s)
+    if not m:
+        return None
+    d, mth, y = m.groups()
+    try:
+        return datetime(int(y), int(mth), int(d))
+    except ValueError:
+        return None
+
+
+def is_within_days(date_str: str, days: int) -> bool:
+    """Retorna True se a data estiver dentro dos últimos N dias."""
+    dt = parse_br_date(date_str)
+    if dt is None:
+        return True  # se não conseguir parsear, inclui por segurança
+    cutoff = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+    return dt >= cutoff
+
+
 def get_page_numbers(driver: webdriver.Chrome, wait: WebDriverWait, paginator_id: str) -> List[int]:
     pag = wait.until(EC.presence_of_element_located((By.ID, paginator_id)))
     links = pag.find_elements(By.CSS_SELECTOR, "a.ui-paginator-page")
-
     nums = []
     for a in links:
         txt = (a.text or "").strip()
         if txt.isdigit():
             nums.append(int(txt))
-
     return sorted(set(nums))
 
 
@@ -239,22 +254,17 @@ def go_to_page(
             pag = wait.until(EC.presence_of_element_located((By.ID, paginator_id)))
             a = pag.find_element(By.CSS_SELECTOR, f"a.ui-paginator-page[aria-label='Page {page_num}']")
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", a)
-
             tbody_before = driver.find_element(By.ID, tbody_id)
             driver.execute_script("arguments[0].click();", a)
-
             try:
                 wait.until(EC.staleness_of(tbody_before))
             except TimeoutException:
                 pass
-
             wait.until(EC.presence_of_element_located((By.ID, tbody_id)))
             return
-
         except (StaleElementReferenceException, ElementClickInterceptedException, TimeoutException) as e:
             last_err = e
             time.sleep(0.5)
-
     raise last_err
 
 
@@ -326,17 +336,35 @@ def click_row_lupa_and_get_detail_fields(
     return {"data_divulgacao": data_div, "cargos": cargos}
 
 
-def parse_current_table_with_details(driver: webdriver.Chrome, wait: WebDriverWait, tbody_id: str) -> List[Dict[str, str]]:
+def parse_current_table_with_details(
+    driver: webdriver.Chrome,
+    wait: WebDriverWait,
+    tbody_id: str,
+    days_back: int = DAYS_BACK,
+) -> tuple:
+    """
+    Retorna (linhas_filtradas, deve_parar_paginacao).
+    Para a paginação quando encontra linha fora do período.
+    """
     tbody = driver.find_element(By.ID, tbody_id)
     rows = tbody.find_elements(By.XPATH, ".//tr")
 
     out: List[Dict[str, str]] = []
+    stop_pagination = False
     current_page = get_active_page(driver, wait, ID_PAGINATOR)
 
     for r in rows:
         cols = [c.text.strip() for c in r.find_elements(By.XPATH, "./td")]
         if len(cols) < 5:
             continue
+
+        data_registro = cols[3]
+
+        # Se a data_registro está fora do período, para a paginação
+        if not is_within_days(data_registro, days_back):
+            print(f"  data_registro {data_registro} fora do período ({days_back} dias). Parando paginação.")
+            stop_pagination = True
+            break
 
         try:
             details = click_row_lupa_and_get_detail_fields(driver, wait, r, current_page)
@@ -347,7 +375,7 @@ def parse_current_table_with_details(driver: webdriver.Chrome, wait: WebDriverWa
             "numero_identificacao": cols[0],
             "eleicao": cols[1],
             "empresa_contratada": cols[2],
-            "data_registro": cols[3],
+            "data_registro": data_registro,
             "abrangencia": cols[4],
             "data_divulgacao": details.get("data_divulgacao"),
             "cargos": details.get("cargos"),
@@ -359,23 +387,29 @@ def parse_current_table_with_details(driver: webdriver.Chrome, wait: WebDriverWa
         except Exception:
             pass
 
-    return out
+    return out, stop_pagination
 
 
 def scrape_all_pages_current_query(
     driver: webdriver.Chrome,
     wait: WebDriverWait,
     paginator_id: str,
-    tbody_id: str
+    tbody_id: str,
+    days_back: int = DAYS_BACK,
 ) -> List[Dict[str, str]]:
     pages = get_page_numbers(driver, wait, paginator_id)
     if not pages:
-        return dedup_by_numero(parse_current_table_with_details(driver, wait, tbody_id))
+        rows, _ = parse_current_table_with_details(driver, wait, tbody_id, days_back)
+        return dedup_by_numero(rows)
 
     all_rows: List[Dict[str, str]] = []
     for p in pages:
         go_to_page(driver, wait, paginator_id, tbody_id, p)
-        all_rows.extend(parse_current_table_with_details(driver, wait, tbody_id))
+        rows, stop = parse_current_table_with_details(driver, wait, tbody_id, days_back)
+        all_rows.extend(rows)
+        if stop:
+            print(f"  Paginação interrompida na página {p}.")
+            break
 
     return dedup_by_numero(all_rows)
 
@@ -417,20 +451,16 @@ def get_existing_keys(ws: gspread.Worksheet, key_col_name: str = "numero_identif
     header = ws.row_values(HEADER_ROW)
     if not header:
         return set()
-
     try:
         idx = header.index(key_col_name) + 1
     except ValueError:
         return set()
-
     col_vals = ws.col_values(idx)
     keys = set()
-
     for v in col_vals[DATA_START_ROW - 1:]:
         v = (v or "").strip()
         if v:
             keys.add(v)
-
     return keys
 
 
@@ -462,7 +492,6 @@ def insert_new_rows_top(ws: gspread.Worksheet, df: pd.DataFrame, key_col_name: s
         return 0
 
     df = df.copy()
-
     for c in COLS_BASE:
         if c not in df.columns:
             df[c] = ""
@@ -494,6 +523,7 @@ def run_one_scope(
     wait: WebDriverWait,
     eleicao_text: str,
     uf_text: str,
+    days_back: int = DAYS_BACK,
     max_retries: int = 3
 ) -> pd.DataFrame:
     for attempt in range(max_retries):
@@ -507,7 +537,7 @@ def run_one_scope(
             click_and_wait_table_refresh(driver, wait, ID_BTN_PESQUISAR, ID_TBODY)
             wait_list_page_ready(driver, wait)
 
-            rows = scrape_all_pages_current_query(driver, wait, ID_PAGINATOR, ID_TBODY)
+            rows = scrape_all_pages_current_query(driver, wait, ID_PAGINATOR, ID_TBODY, days_back)
             df = pd.DataFrame(rows)
 
             df["uf_filtro"] = uf_text
@@ -542,7 +572,8 @@ def run_one_scope(
 
 def run_to_google_sheets_insert_dedup(
     eleicao_text: str = "Eleições Gerais 2026",
-    headless: bool = False
+    headless: bool = False,
+    days_back: int = DAYS_BACK,
 ) -> None:
     gc = gspread_client(CREDS_PATH)
     ss = get_spreadsheet(gc)
@@ -555,8 +586,8 @@ def run_to_google_sheets_insert_dedup(
         wait_dom_ready(driver)
 
         if "BRASIL" not in SKIP_SHEETS:
-            print("Processando BRASIL...")
-            df_brasil = run_one_scope(driver, wait, eleicao_text=eleicao_text, uf_text="BRASIL")
+            print(f"Processando BRASIL (últimos {days_back} dias)...")
+            df_brasil = run_one_scope(driver, wait, eleicao_text=eleicao_text, uf_text="BRASIL", days_back=days_back)
             ws_brasil = ensure_worksheet(ss, "BRASIL", rows=2000, cols=max(30, len(COLS_BASE) + 5))
             novos = insert_new_rows_top(ws_brasil, df_brasil)
             print(f"BRASIL: {novos} registros novos inseridos")
@@ -568,8 +599,8 @@ def run_to_google_sheets_insert_dedup(
             if uf in SKIP_SHEETS:
                 continue
             try:
-                print(f"Processando {uf} ({i}/{len(ufs)})...")
-                df_uf = run_one_scope(driver, wait, eleicao_text=eleicao_text, uf_text=uf)
+                print(f"Processando {uf} ({i}/{len(ufs)}, últimos {days_back} dias)...")
+                df_uf = run_one_scope(driver, wait, eleicao_text=eleicao_text, uf_text=uf, days_back=days_back)
                 ws = ensure_worksheet(ss, uf, rows=2000, cols=max(30, len(COLS_BASE) + 5))
                 novos = insert_new_rows_top(ws, df_uf)
                 print(f"{uf}: {novos} registros novos inseridos")
@@ -585,10 +616,12 @@ def run_to_google_sheets_insert_dedup(
 if __name__ == "__main__":
     eleicao = os.getenv("ELEICAO_TEXT", "Eleições Gerais 2026")
     headless = bool(os.getenv("CI", False))
+    days_back = int(os.getenv("DAYS_BACK", "2"))
 
     print(f"Iniciando scraper para: {eleicao}")
     print(f"Modo headless: {headless}")
+    print(f"Filtro: últimos {days_back} dias")
     print(f"SPREADSHEET_ID: {os.getenv('SPREADSHEET_ID', SPREADSHEET_ID)}")
 
-    run_to_google_sheets_insert_dedup(eleicao_text=eleicao, headless=headless)
+    run_to_google_sheets_insert_dedup(eleicao_text=eleicao, headless=headless, days_back=days_back)
     print("Atualização concluída (INSERT na linha 4; ISO + USER_ENTERED; Dashboard intocado).")
