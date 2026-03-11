@@ -40,7 +40,6 @@ CREDS_PATH = "credentials.json"
 HEADER_ROW = 3
 DATA_START_ROW = 4
 
-# melhor lugar p/ cargos: perto de data_divulgacao (vem da página de detalhe) e antes de uf_filtro/capturado_em
 COLS_BASE = [
     "numero_identificacao",
     "eleicao",
@@ -164,12 +163,19 @@ def click_and_wait_table_refresh(
     except Exception:
         old_tbody = None
 
-    btn = safe_click(driver, wait, By.ID, btn_id)
-    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-    try:
-        btn.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", btn)
+    # Re-busca o botão imediatamente antes de cada tentativa de clique
+    for attempt in range(3):
+        try:
+            btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, btn_id))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            driver.execute_script("arguments[0].click();", btn)
+            break
+        except StaleElementReferenceException:
+            if attempt == 2:
+                raise
+            time.sleep(0.5)
 
     if old_tbody is not None:
         try:
